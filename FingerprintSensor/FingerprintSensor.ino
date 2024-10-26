@@ -1,48 +1,71 @@
 #include <SoftwareSerial.h>
 
-// Comments side notes for me to talk about the changes:p
+SoftwareSerial mySerial(2, 3);  // RX, TX pins for fingerprint sensor          ////////////// Softwarerial help to use serial communication using different ports from 0 and 1 (just try it)
+const int touchPin = 8;         // Pin connected to the fingerprint touch signal
 
-// Define new pins for SoftwareSerial (avoid pins 0 and 1)
-// Sofware series allos to use other digital pins for communication
-SoftwareSerial mySerial(2, 3);  // RX, TX pins for communication with the fingerprint sensor
-
-const int touchPin = 8;         // Pin connected to TP_high (Pin 5 on the sensor)
+// System Authentification for the fingerprint sensor, for now there is limited MaxAttempts
+// Variables for user management
+int maxAttempts = 3;            // Maximum allowed attempts before locking
+int currentAttempts = 0;        // Track failed attempts
+bool systemLocked = false;      // Lock the system after too many failed attempts
+int userID = 1;                 // Start with User ID 1
 
 void setup() {
-  pinMode(touchPin, INPUT);     // Set pin for touch detection
-  Serial.begin(9600);           // Start Serial Monitor
-  mySerial.begin(115200);       // Start communication with the fingerprint sensor (adjust baud rate if necessary)
-  delay(1000);                  // Allow sensor some time for setup
-  
-  Serial.println("Initializing Fingerprint Sensor...");
-  sendCommand(0xA0);            // Open the sensor
-  
-  if (receiveResponse()) {
-    Serial.println("Sensor initialized successfully.");
-  } else {
-    Serial.println("Failed to initialize sensor.");
-  }
+  pinMode(touchPin, INPUT);
+  Serial.begin(9600);
+  mySerial.begin(115200);      // Baud rate (adjust if necessary) ///////// Changed from 9600 to 115200 just because this value is more common in serial running
+  Serial.println("Fingerprint Security System Initialized.");
 }
 
+// System Locked loop to handle maximum attempts for the finger scan
 void loop() {
-  // Check if finger is detected using the touch pin
-  if (digitalRead(touchPin) == HIGH) {
-    Serial.println("Finger detected. Enrolling...");
-    enrollFingerprint(1);       // Enroll the fingerprint with ID 1
-    delay(2000);
+  if (systemLocked) { 
+    // If true (system is locked)
+    Serial.println("System is locked. Too many failed attempts.");
+    delay(5000); // Wait before allowing more actions
+    return;
   }
-  delay(1000);
+  // if false then just run it...
+  // Check for a finger touch
+  if (digitalRead(touchPin) == HIGH) {
+    Serial.println("Finger detected. Starting verification process...");
+    bool verified = verifyUser();
+    if (verified) {
+      Serial.println("User verified successfully.");
+      // Reset failed attempts after successful verification
+      currentAttempts = 0;
+    } else {
+      currentAttempts++;
+      Serial.println("Verification failed.");
+      if (currentAttempts >= maxAttempts) {
+        Serial.println("Too many failed attempts. Locking system.");
+        systemLocked = true;  // Lock the system
+      }
+    }
+    delay(2000);  // Avoid spamming checks
+  }
+
+  // Allow new user enrollment
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    if (command == 'e') {  // Press 'e' to enroll a new user
+      enrollUser(userID);
+      userID++;  // Increment User ID for the next enrollment
+    } else if (command == 'r') {  // Press 'r' to reset system lock
+      resetSystem();
+    }
+  }
 }
 
-// Enroll fingerprint with given ID
-void enrollFingerprint(uint8_t id) {
-  sendCommand(0x01, id);         // Command to start enrollment with specific ID
+// Function to enroll a new user
+void enrollUser(int id) {
+  Serial.print("Enrolling new user with ID: ");
+  Serial.println(id);
+  sendCommand(0x01, id);  // Send command to start enrollment with this ID
   if (receiveResponse()) {
     Serial.println("Place your finger on the sensor...");
     waitForFinger();
-    
-    // After placing the finger, capture the fingerprint and store it
-    sendCommand(0x01, id);  // Continue with the enrollment steps
+    sendCommand(0x01, id);  // Capture the fingerprint and save
     if (receiveResponse()) {
       Serial.println("Fingerprint enrolled successfully.");
     } else {
@@ -51,6 +74,23 @@ void enrollFingerprint(uint8_t id) {
   } else {
     Serial.println("Failed to start enrollment.");
   }
+}
+
+// Function to verify the user
+bool verifyUser() {
+  sendCommand(0x10);  // Command for verification
+  if (receiveResponse()) {
+    return true;  // User verified
+  } else {
+    return false;  // Verification failed
+  }
+}
+
+// Reset system lock
+void resetSystem() {
+  Serial.println("System reset. Lock cleared.");
+  systemLocked = false;
+  currentAttempts = 0;
 }
 
 // Wait for finger placement
@@ -73,17 +113,10 @@ bool receiveResponse() {
   byte response[8];
   int index = 0;
   unsigned long startTime = millis();
-  
-  // Add a timeout to avoid hanging if no data is received
-  while (index < 8 && (millis() - startTime) < 500) {  // 500ms timeout
+  while (index < 8 && (millis() - startTime) < 500) {  // Timeout after 500ms
     if (mySerial.available()) {
       response[index++] = mySerial.read();
     }
   }
-  
-  if (index == 8 && response[1] == response[6]) {
-    return true;  // Valid response
-  } else {
-    return false; // Invalid or incomplete response
-  }
+  return (index == 8 && response[1] == response[6]);
 }
